@@ -6,6 +6,7 @@ use Doctrine\Common\Collections\ArrayCollection;
 use Doctrine\ORM\Internal\Hydration\ArrayHydrator;
 use Doctrine\ORM\Internal\HydrationCompleteHandler;
 use Doctrine\ORM\Mapping\ClassMetadata;
+use Symfony\Component\PropertyAccess\PropertyAccessor;
 
 class SimpleObjectHydrator extends ArrayHydrator
 {
@@ -35,13 +36,13 @@ class SimpleObjectHydrator extends ArrayHydrator
     protected function hydrateAllData()
     {
         $arrayResult = parent::hydrateAllData();
+
         $readOnlyResult = [];
         if (is_array($arrayResult)) {
             foreach ($arrayResult as $data) {
                 $readOnlyResult[] = $this->doHydrateRowData($this->getRootclassName(), $data);
             }
         }
-
         return $readOnlyResult;
     }
 
@@ -68,10 +69,13 @@ class SimpleObjectHydrator extends ArrayHydrator
      */
     protected function doHydrateRowData($className, array $data)
     {
+
         $classMetaData = $this->_em->getClassMetadata($className);
         $mappings = $classMetaData->getAssociationMappings();
         $entity = $this->createEntity($classMetaData, $data);
         $reflection = new \ReflectionObject($entity);
+
+        $data = $this->dataGroupEmbended($classMetaData, $data);
 
         foreach ($data as $name => $value) {
             if (isset($mappings[$name]) && is_array($value)) {
@@ -93,6 +97,10 @@ class SimpleObjectHydrator extends ArrayHydrator
                 }
             }
 
+            if(isset($classMetaData->embeddedClasses[$name])){
+                $value = $this->hydrateEmbended($classMetaData, $name, $value);
+            }
+
             if (
                 $classMetaData->inheritanceType === ClassMetadata::INHERITANCE_TYPE_SINGLE_TABLE
                || $classMetaData->inheritanceType === ClassMetadata::INHERITANCE_TYPE_JOINED
@@ -103,7 +111,12 @@ class SimpleObjectHydrator extends ArrayHydrator
                    continue;
                }
             } else {
-                $property = $reflection->getProperty($name);
+                if($reflection->hasProperty($name)){
+                    $property = $reflection->getProperty($name);
+                }else{
+                    $property = $this->getPrivateProperty($entity, $name);
+                }
+
             }
 
             if ($property->isPublic()) {
@@ -114,8 +127,37 @@ class SimpleObjectHydrator extends ArrayHydrator
                 $property->setAccessible(false);
             }
         }
-
+        unset($mappings, $reflection, $classMetaData,$data, $property, $value);
         return $entity;
+    }
+
+    protected function dataGroupEmbended($classMetaData, $data){
+        $result = [];
+        foreach ($data as $name => $value){
+            if(!$this->propertyIsEbbended($classMetaData, $name)) {
+                $result[$name] = $value;
+                continue;
+            }
+            $pointPosition = strpos( $name,".");
+
+            $result[substr($name, 0, $pointPosition)][substr($name, $pointPosition+1)] = $value;
+        }
+        unset($data);
+        return $result;
+    }
+
+    protected function propertyIsEbbended($classMetaData, $name){
+        $pointPosition = strpos( $name,".");
+        if($pointPosition !== false){
+            $ebbendedName = substr($name, 0, $pointPosition);
+            return !empty($classMetaData->embeddedClasses[$ebbendedName]);
+        }
+        return false;
+    }
+
+    protected function hydrateEmbended($classMetaData, $name, $value)
+    {
+        return $this->doHydrateRowData($classMetaData->embeddedClasses[$name]["class"], $value);
     }
 
     /**
@@ -129,10 +171,12 @@ class SimpleObjectHydrator extends ArrayHydrator
         $className = $this->getEntityClassName($classMetaData, $data);
         $reflection = new \ReflectionClass($className);
         $entity = $reflection->newInstanceWithoutConstructor();
+
         $entity->{static::READ_ONLY_PROPERTY} = true;
 
         $this->deferPostLoadInvoking($classMetaData, $entity);
 
+        unset($reflection, $data, $className);
         return $entity;
     }
 
@@ -200,7 +244,7 @@ class SimpleObjectHydrator extends ArrayHydrator
         foreach ($data as $key => $linkedData) {
             $entities[$key] = $this->doHydrateRowData($mapping['targetEntity'], $linkedData);
         }
-
+        unset($mapping, $data);
         return new ArrayCollection($entities);
     }
 
@@ -225,7 +269,7 @@ class SimpleObjectHydrator extends ArrayHydrator
         foreach ($data as $key => $linkedData) {
             $entities[$key] = $this->doHydrateRowData($mapping['targetEntity'], $linkedData);
         }
-
+        unset($mapping, $data);
         return new ArrayCollection($entities);
     }
 
@@ -252,12 +296,43 @@ class SimpleObjectHydrator extends ArrayHydrator
         if (isset($reflection) === false || $reflection instanceof \ReflectionProperty === false) {
             throw new \Exception(get_class($object) . '::$' . $property . ' does not exists.');
         }
+        unset($classNames);
 
         $accessible = $reflection->isPublic();
         $reflection->setAccessible(true);
         $value = $reflection->getValue($object);
         $reflection->setAccessible($accessible === false);
 
+        unset($accessible, $reflection);
         return $value;
+    }
+
+    /**
+     * @param object $object
+     * @param string $property
+     * @return mixed
+     * @throws \Exception
+     */
+    protected function getPrivateProperty($object, $property)
+    {
+        $classNames = array_merge([get_class($object)], array_values(class_parents(get_class($object))));
+        $classNameIndex = 0;
+        do {
+            try {
+                $reflection = new \ReflectionProperty($classNames[$classNameIndex], $property);
+                $continue = false;
+            } catch (\ReflectionException $e) {
+                $classNameIndex++;
+                $continue = true;
+            }
+        } while ($continue);
+
+        if (isset($reflection) === false || $reflection instanceof \ReflectionProperty === false) {
+            throw new \Exception(get_class($object) . '::$' . $property . ' does not exists.');
+        }
+
+        unset($classNames);
+
+        return $reflection;
     }
 }
