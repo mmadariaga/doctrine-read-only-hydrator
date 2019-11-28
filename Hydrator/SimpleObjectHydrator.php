@@ -69,13 +69,37 @@ class SimpleObjectHydrator extends ArrayHydrator
      */
     protected function doHydrateRowData($className, array $data)
     {
-
         $classMetaData = $this->_em->getClassMetadata($className);
         $mappings = $classMetaData->getAssociationMappings();
         $entity = $this->createEntity($classMetaData, $data);
         $reflection = new \ReflectionObject($entity);
 
         $data = $this->dataGroupEmbended($classMetaData, $data);
+
+        foreach ($mappings as $propertyName => $property) {
+
+            if (!isset($property['joinColumns'])) {
+                continue;
+            }
+
+            $dbFldName = $property['joinColumns'][0]['name'];
+
+            if (!array_key_exists($dbFldName, $data)) {
+                continue;
+            }
+
+            if ($dbFldName === $propertyName) {
+                continue;
+            }
+
+            $fkColumn = current(
+                $mappings[$propertyName]['sourceToTargetKeyColumns']
+            );
+            $data[$propertyName] = [
+                $fkColumn  => $data[$dbFldName]
+            ];
+            unset($data[$dbFldName]);
+        }
 
         foreach ($data as $name => $value) {
             if (isset($mappings[$name]) && is_array($value)) {
@@ -116,7 +140,6 @@ class SimpleObjectHydrator extends ArrayHydrator
                 }else{
                     $property = $this->getPrivateProperty($entity, $name);
                 }
-
             }
 
             if ($property->isPublic()) {
@@ -187,9 +210,11 @@ class SimpleObjectHydrator extends ArrayHydrator
      */
     protected function deferPostLoadInvoking(ClassMetadata $classMetaData, $entity)
     {
-        /** @var HydrationCompleteHandler $handler */
-        $handler = $this->getPrivatePropertyValue($this->_uow, 'hydrationCompleteHandler');
-        $handler->deferPostLoadInvoking($classMetaData, $entity);
+        // Do not notify hydration completed
+
+        // /** @var HydrationCompleteHandler $handler */
+        // $handler = $this->getPrivatePropertyValue($this->_uow, 'hydrationCompleteHandler');
+        // $handler->deferPostLoadInvoking($classMetaData, $entity);
 
         return $this;
     }
@@ -325,7 +350,7 @@ class SimpleObjectHydrator extends ArrayHydrator
                 $classNameIndex++;
                 $continue = true;
             }
-        } while ($continue);
+        } while ($continue && $classNameIndex < count($classNames));
 
         if (isset($reflection) === false || $reflection instanceof \ReflectionProperty === false) {
             throw new \Exception(get_class($object) . '::$' . $property . ' does not exists.');
