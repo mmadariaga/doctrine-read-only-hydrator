@@ -1,5 +1,5 @@
 {
-    "name": "steevanb/doctrine-read-only-hydrator",
+    "name": "mmadariaga/doctrine-read-only-hydrator",
     "license": "MIT",
     "description": "Fast hydratation for read only purpose",
     "autoload": {
